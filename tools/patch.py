@@ -425,30 +425,50 @@ def patch_create_window(src):
     """
     createWindow.js — force premium window size
     ─────────────────────────────────────────────
-    Originally the app sets DEFAULT_WIDTH=1420, DEFAULT_HEIGHT=850
-    (sized to fit ads). After window creation it calls fetchUser()
-    asynchronously: if the user has a premium role, the minimum size
-    is reduced to 940×500; otherwise it stays at the larger ad-friendly
-    dimensions and any existing window smaller than that is forced to
-    resize.
+    The original code has THREE places that gate window dimensions on
+    premium status, all of which must be patched:
 
-    Patch:
-      1. Rewrite DEFAULT_WIDTH/HEIGHT constants to 940/500 so the
-         initial window is created at premium dimensions.
-      2. Replace the fetchUser().then() callback body with a static
-         assignment of the premium dimensions so the async handler
-         also sets premium sizing regardless of the real role.
+    1. Constants (DEFAULT_WIDTH/HEIGHT = 1420/850 for free users)
+       Fixed by: replacing with 940/500
+
+    2. LevelDB reads in createWindow():
+         MIN_WIDTH  = (await get("MIN_WIDTH"))  || MIN_WIDTH;
+         MIN_HEIGHT = (await get("MIN_HEIGHT")) || MIN_HEIGHT;
+       These load the previously written free-user values (1420/850)
+       from the DB on EVERY launch, overwriting our patched constants
+       before the window is even created. This was the root cause of
+       the intermittent failure — the patch worked on first run (no
+       DB value yet) but failed on all subsequent runs.
+       Fixed by: replacing with hardcoded 940/500
+
+    3. fetchUser().then() block that runs AFTER window creation:
+       Also reads/writes MIN_WIDTH to DB, and calls setMinimumSize().
+       Fixed by: replacing the entire block with hardcoded values
     """
     path = os.path.join(src, "createWindow.js")
     with open(path, 'r', encoding='utf-8') as f:
         code = f.read()
 
+    # Point 1: Change DEFAULT_WIDTH/HEIGHT constants
     code = code.replace("const DEFAULT_WIDTH = 1420;",
                         "const DEFAULT_WIDTH = 940; // PATCHED: premium size")
     code = code.replace("const DEFAULT_HEIGHT = 850;",
                         "const DEFAULT_HEIGHT = 500; // PATCHED: premium size")
 
-    # Replace the fetchUser().then((user) => { ... }); block
+    # Point 2: Kill the LevelDB reads that restore stale free-user MIN values.
+    # These lines run inside createWindow() before the window is created and
+    # will load whatever was last written to DB (1420/850 for free users),
+    # silently overriding our patched DEFAULT_WIDTH/HEIGHT constants.
+    code = code.replace(
+        '  MIN_WIDTH = (await get("MIN_WIDTH")) || MIN_WIDTH;',
+        '  MIN_WIDTH = 940; // PATCHED: ignore stale DB value'
+    )
+    code = code.replace(
+        '  MIN_HEIGHT = (await get("MIN_HEIGHT")) || MIN_HEIGHT;',
+        '  MIN_HEIGHT = 500; // PATCHED: ignore stale DB value'
+    )
+
+    # Point 3: Replace the fetchUser().then() block that runs after window creation.
     rx = re.compile(
         r'fetchUser\(\)\.then\(\(user\) =>.*?windows\.client\.setMinimumSize\(MIN_WIDTH, MIN_HEIGHT\);\s*\}\s*\}\);',
         re.DOTALL
@@ -461,10 +481,10 @@ def patch_create_window(src):
     )
     new_code, n = rx.subn(replacement, code)
     if n == 0:
-        warn("createWindow.js: fetchUser block not found — constants patch still applied")
+        warn("createWindow.js: fetchUser block not found — points 1+2 still applied")
         new_code = code
     else:
-        ok("createWindow.js — fetchUser() size gate replaced with premium dims")
+        ok("createWindow.js — all 3 size gates replaced with premium dims (940x500)")
 
     _write(path, new_code)
 
