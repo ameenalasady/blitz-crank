@@ -1,0 +1,45 @@
+# ── Blitz IP — NEVER COMMIT ──────────────────────────────────────
+*.asar
+*.node
+*.dll
+app-extracted/
+app-modified/
+_patch_work/
+_clean_extract/
+_verify_out/
+_inspect/
+_livecheck/
+_backup/
+
+# ── Ghidra output (may contain decompiled proprietary code) ──────
+output/
+*.c
+disasm_full.txt
+strings_all.txt
+strings_output.txt
+ghidra_output.txt
+
+# ── Python ───────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# ── Node ─────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+
+# ── OS ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo

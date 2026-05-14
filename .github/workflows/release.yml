@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify no Blitz IP committed
+        run: |
+          # Fail the release if any asar, node, or dll file was accidentally committed
+          if find . -name "*.asar" -o -name "*.node" -o -name "blitz_core*" | grep -q .; then
+            echo "ERROR: Blitz proprietary files detected in repo!"
+            exit 1
+          fi
+          echo "Clean — no proprietary files found."
+
+      - name: Package release artifact
+        run: |
+          mkdir -p dist
+          # Bundle the patch script and docs into a single zip
+          zip -r dist/blitz-crank-${{ github.ref_name }}.zip \
+            tools/patch.py \
+            docs/ \
+            README.md \
+            LICENSE
+          echo "Packaged: dist/blitz-crank-${{ github.ref_name }}.zip"
+
+      - name: Extract changelog from tag annotation
+        id: changelog
+        run: |
+          git fetch --tags --force
+          NOTES=$(git tag -l --format='%(contents)' ${{ github.ref_name }} | tail -n +3)
+          if [ -z "$NOTES" ]; then
+            NOTES="See README.md for full documentation."
+          fi
+          echo "notes=$NOTES" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Blitz Crank ${{ github.ref_name }}"
+          body: |
+            ## Blitz Crank ${{ github.ref_name }}
+
+            > **For educational and research purposes only.**
+            > No Blitz source code or proprietary assets are included.
+
+            ### What's in this release
+            - `tools/patch.py` — The complete patch installer
+            - `docs/` — In-depth documentation of every technique used
+            - `README.md` — Full walkthrough
+
+            ### Requirements
+            - Windows 10/11
+            - Python 3.8+
+            - Node.js 18+ with npx
+            - Blitz desktop app installed
+
+            ### Usage
+            ```powershell
+            # Apply all patches
+            python tools\patch.py
+
+            # Restore originals
+            python tools\patch.py --restore
+            ```
+
+            ${{ steps.changelog.outputs.notes }}
+          files: |
+            dist/blitz-crank-${{ github.ref_name }}.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: false
