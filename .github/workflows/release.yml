@@ -24,28 +24,51 @@ jobs:
 
       - name: Verify no Blitz IP committed
         run: |
-          # Fail the release if any asar, node, or dll file was accidentally committed
-          if find . -name "*.asar" -o -name "*.node" -o -name "blitz_core*" | grep -q .; then
+          # Fail the release if any ASAR, native .node, or proprietary Blitz
+          # binary was accidentally committed. These are copyrighted assets and
+          # must never be distributed.
+          FOUND=$(find . \
+            -name "*.asar" \
+            -o -name "*.node" \
+            -o -name "blitz_core*" \
+            -o -name "BlitzHelper*" \
+            -o -name "BlitzUpdater*" \
+            | grep -v "^./.git" || true)
+          if [ -n "$FOUND" ]; then
             echo "ERROR: Blitz proprietary files detected in repo!"
+            echo "$FOUND"
             exit 1
           fi
           echo "Clean — no proprietary files found."
 
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile tools/patch.py   && echo "patch.py   OK"
+          python -m py_compile tools/patches.py && echo "patches.py OK"
+
       - name: Package release artifact
         run: |
           mkdir -p dist
-          # Bundle the patch script and docs into a single zip
-          zip -r dist/blitz-crank-${{ github.ref_name }}.zip \
+          VERSION=${{ github.ref_name }}
+
+          # Bundle the full tools/ directory (engine + registry + patch .js files)
+          # plus top-level docs so the zip is self-contained — users unzip and run.
+          zip -r dist/blitz-crank-${VERSION}.zip \
             tools/patch.py \
-            docs/ \
+            tools/patches.py \
+            tools/patches/ \
+            tools/GhidraDecompExport.java \
             README.md \
             LICENSE
-          echo "Packaged: dist/blitz-crank-${{ github.ref_name }}.zip"
+
+          echo "Contents of dist/blitz-crank-${VERSION}.zip:"
+          unzip -l dist/blitz-crank-${VERSION}.zip
 
       - name: Extract changelog from tag annotation
         id: changelog
         run: |
           git fetch --tags --force
+          # Tag annotation body starts after the first blank line
           NOTES=$(git tag -l --format='%(contents)' ${{ github.ref_name }} | tail -n +3)
           if [ -z "$NOTES" ]; then
             NOTES="See README.md for full documentation."
@@ -67,25 +90,45 @@ jobs:
             > No Blitz source code or proprietary assets are included.
 
             ### What's in this release
-            - `tools/patch.py` — The complete patch installer
-            - `docs/` — In-depth documentation of every technique used
-            - `README.md` — Full walkthrough
+
+            | File | Purpose |
+            |------|---------|
+            | `tools/patch.py` | Generic patch engine — orchestrates all patches |
+            | `tools/patches.py` | Patch registry — add/edit patches here |
+            | `tools/patches/` | JS source files for rewrites and injection snippets |
+            | `tools/GhidraDecompExport.java` | Ghidra headless analysis script |
+            | `README.md` | Full reverse engineering walkthrough |
 
             ### Requirements
             - Windows 10/11
             - Python 3.8+
-            - Node.js 18+ with npx
-            - Blitz desktop app installed
+            - Node.js 18+ (for `npx` / `@electron/asar`)
+            - Blitz desktop app installed at its default path
 
             ### Usage
             ```powershell
+            # Download and extract blitz-crank-${{ github.ref_name }}.zip, then:
+
             # Apply all patches
             python tools\patch.py
 
-            # Restore originals
+            # Restore originals from backup
             python tools\patch.py --restore
             ```
 
+            ### Adding a custom patch
+            Edit `tools/patches.py` — append one dict to `PATCHES`:
+            ```python
+            # Simple replacement
+            { "id": "myPatch", "desc": "...", "file": "some/file.js",
+              "op": "replace", "find": "old string", "replace": "new string" }
+
+            # Full file rewrite (put content in tools/patches/myPatch.js)
+            { "id": "myPatch", "desc": "...", "file": "some/file.js",
+              "op": "rewrite", "src": "patches/myPatch.js" }
+            ```
+
+            ---
             ${{ steps.changelog.outputs.notes }}
           files: |
             dist/blitz-crank-${{ github.ref_name }}.zip
