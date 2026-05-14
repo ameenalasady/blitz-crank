@@ -44,6 +44,30 @@ BACKUP_DIR  = os.path.join(SCRIPT_DIR, "_backup")
 RESTORE = "--restore" in sys.argv
 
 
+def kill_blitz():
+    """Terminate all running Blitz processes.
+
+    app.asar.unpacked contains native .node files (classic-level, lzma-native)
+    that Windows locks while Blitz is running. shutil.rmtree() will fail with
+    PermissionError (WinError 5) if any of those handles are open.
+    We kill the process first to release the locks.
+    """
+    BLITZ_PROCS = ["Blitz.exe", "BlitzUpdater.exe", "BlitzHelper.exe"]
+    killed = []
+    for proc_name in BLITZ_PROCS:
+        result = subprocess.run(
+            f'taskkill /F /IM "{proc_name}" /T',
+            shell=True, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            killed.append(proc_name)
+    if killed:
+        log(f"Killed: {', '.join(killed)} — waiting for handles to release...")
+        import time; time.sleep(2)
+    else:
+        log("No running Blitz processes found")
+
+
 # ══════════════════════════════════════════════════════════════════
 # Utility helpers
 # ══════════════════════════════════════════════════════════════════
@@ -86,7 +110,9 @@ def run(cmd, check=True):
 # ══════════════════════════════════════════════════════════════════
 
 def do_restore():
+    """Restore all original files from backup."""
     step("Restoring originals from backup...")
+    kill_blitz()
     restore_file("blitz_core.node", CORE_NODE)
     restore_file("app.asar", ASAR_PATH)
     restore_file(".env.production", ENV_FILE)
@@ -518,6 +544,10 @@ def patch_asar():
     log("Repacking with --unpack '{*.node,*.dll}'")
     run(f'npx @electron/asar pack "{EXTRACT_DIR}" "{REPACK_ASAR}" --unpack "{{*.node,*.dll}}"')
     ok("ASAR repacked")
+
+    # Kill Blitz before installing — native .node files in app.asar.unpacked
+    # are locked by the running process; rmtree will fail with WinError 5 otherwise.
+    kill_blitz()
 
     shutil.copy2(REPACK_ASAR, ASAR_PATH)
     ok(f"Installed → {ASAR_PATH}")

@@ -25,10 +25,9 @@
 9. [Patch 4 — `app-update.yml`](#9-patch-4--app-updateyml)
 10. [ASAR Repacking — Why `--unpack` Matters](#10-asar-repacking--why---unpack-matters)
 11. [Tools Used](#11-tools-used)
-12. [Lessons Learned & Pitfalls](#12-lessons-learned--pitfalls)
-13. [Usage](#13-usage)
-14. [Restore](#14-restore)
-15. [Disclaimer](#15-disclaimer)
+12. [Usage](#12-usage)
+13. [Restore](#13-restore)
+14. [Disclaimer](#14-disclaimer)
 
 ---
 
@@ -516,35 +515,7 @@ app.asar.unpacked/    ← Real files on disk (native modules + DLLs)
 
 ---
 
-## 12. Lessons Learned & Pitfalls
-
-### Pitfall 1: Double-Patching from Modified ASAR
-**Problem:** The installer was extracting the already-patched ASAR on re-runs, causing `AD_BLOCK_PATTERNS` to be inserted twice — a `SyntaxError` at runtime.  
-**Fix:** Always extract from the **original backup ASAR**, never from the installed (potentially patched) one. Keep the backup untouched.
-
-### Pitfall 2: Missing `liblzma.dll`
-**Problem:** `lzma-native`'s `electron.napi.node` crashed with "The specified module could not be found" because `liblzma.dll` was packed inside the ASAR while its loader was on disk.  
-**Fix:** Use `--unpack "{*.node,*.dll}"` instead of just `--unpack "*.node"`.
-
-### Pitfall 3: Invalid Electron URL Patterns
-**Problem:** `*://adservice.google.*/*` (wildcard TLD) is invalid in Electron's `webRequest` API, throwing `TypeError: Invalid url pattern`.  
-**Fix:** Only use subdomain wildcards (`*://*.domain.com/*`). Wildcard TLDs are not supported.
-
-### Pitfall 4: Runtime vs Install Copy
-**Problem:** Blitz copies `resources/binaries/` to `%APPDATA%\Blitz\blitz-deps\{version}\` on every startup via `copyDeps()`. Patching only the install directory left the runtime copy unpatched.  
-**Fix:** Patch all known locations including the runtime deps directory.
-
-### Pitfall 5: Locked Files on Windows
-**Problem:** `app.asar.unpacked\classic-level\*.node` files are held open by the running Blitz process. `shutil.rmtree()` fails with `PermissionError` (WinError 5).  
-**Fix:** Kill all Blitz processes before running the installer.
-
-### Pitfall 6: OTA vs electron-updater
-**Problem:** `ota.js` is a completely separate update mechanism from `autoUpdater/index.js`. Patching only `autoUpdater` left the OTA checker running, causing `ENOTFOUND utils.iesdev.com` errors.  
-**Fix:** Patch both independently.
-
----
-
-## 13. Usage
+## 12. Usage
 
 ### Requirements
 
@@ -574,7 +545,7 @@ The script will:
 
 ---
 
-## 14. Restore
+## 13. Restore
 
 ```powershell
 python tools\patch.py --restore
@@ -584,7 +555,7 @@ Restores all files from the `_backup/` directory created during the first run.
 
 ---
 
-## 15. Disclaimer
+## 14. Disclaimer
 
 This project is provided **strictly for educational and research purposes**. It documents:
 - x86-64 binary analysis and patching techniques
