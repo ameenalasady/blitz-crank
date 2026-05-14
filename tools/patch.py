@@ -518,6 +518,135 @@ def patch_blitz_entry(src):
     _write(path, code)
     ok("blitz-entry.js — Topics API and auto-start registration disabled")
 
+def patch_domain(src):
+    """
+    util/domain.js — pin traffic to probuilds.net, skip geo fingerprinting
+    ───────────────────────────────────────────────────────────────────────
+    Original: getDomain() fetches https://cloudflare.com/cdn-cgi/trace to
+    geolocate the user, then computes CRC32(machineID + "desktop-traffic") % 100
+    to deterministically route the user to one of five branded mirror domains
+    (agentselect.net, championselect.net, lolstats.com, probuilds.net,
+    tftcomps.gg) based on a per-country rollout percentage table.
+
+    This means:
+      1. Cloudflare learns your IP and country on every Blitz launch
+      2. Your hardware machine ID is used as a persistent tracking seed
+      3. Some users are routed to different ad configs than others
+
+    Patch: Replace getDomain() to always return "probuilds.net" synchronously,
+           with no network calls and no machine ID computation.
+    """
+    path = os.path.join(src, "util", "domain.js")
+    if not os.path.exists(path):
+        warn("util/domain.js not found — skipping")
+        return
+    _write(path, r"""// EDUCATIONAL PATCH: geo fingerprinting and A/B domain routing disabled
+const log = require("npmlog");
+const MAIN_DOMAIN = { hostname: "probuilds.net" };
+
+// PATCHED: always return the canonical domain synchronously.
+// Original code fetched cloudflare.com/cdn-cgi/trace to geolocate the user,
+// then used CRC32(machineID, 'desktop-traffic') % 100 to route traffic to
+// one of several mirror domains as an A/B test. Stripped for privacy.
+async function getDomain(_version) {
+  return MAIN_DOMAIN.hostname;
+}
+
+module.exports = { getDomain, MAIN_DOMAIN };
+""")
+    ok("util/domain.js — geo lookup + A/B domain routing replaced with static hostname")
+
+
+def patch_machine_id(src):
+    """
+    blitz-entry.js — no-op writeMachineID()
+    ───────────────────────────────────────────────────────────────────────
+    On every launch, handleReady() calls writeMachineID() which reads the
+    native machine ID from blitz_core.node (a hardware fingerprint derived
+    from CPU serial, disk serial, etc.) and writes it to
+    %APPDATA%/.machineId as a plain text file. This file is sent to Blitz
+    servers as a persistent unique identifier to correlate sessions across
+    reinstalls and account changes.
+
+    Patch: No-op writeMachineID() so the file is never written or updated.
+    The domain.js patch also ensures machineID is never used for routing.
+    """
+    path = os.path.join(src, "blitz-entry.js")
+    with open(path, 'r', encoding='utf-8') as f:
+        code = f.read()
+
+    old = (
+        "async function writeMachineID() {\n"
+        "  try {\n"
+        "    const machineId = getMachineID();\n"
+        "    const machineIDFile = path.join(app.getPath(\"appData\"), \".machineId\");\n"
+        "    await fse.writeFile(machineIDFile, machineId);\n"
+        "  } catch (err) {\n"
+        "    log.error(\"Error: \", err);\n"
+        "  }\n"
+        "}"
+    )
+    new = (
+        "// EDUCATIONAL PATCH: machineID file write disabled\n"
+        "async function writeMachineID() {\n"
+        "  // no-op: hardware fingerprint not written to disk\n"
+        "}"
+    )
+    if old not in code:
+        warn("blitz-entry.js: writeMachineID() block not found — skipping")
+        return
+    _write(path, code.replace(old, new))
+    ok("blitz-entry.js — writeMachineID() no-op'd (hardware fingerprint not written)")
+
+
+def patch_pin_app(src):
+    """
+    pinApp/index.js — disable taskbar pin prompt
+    ───────────────────────────────────────────────────────────────────────
+    On first launch, pinApp/index.js spawns PinManager.exe (a bundled
+    helper binary) with a Blitz.lnk shortcut path as its argument. This
+    silently pins the Blitz shortcut to the Windows taskbar without any
+    user confirmation dialog. The result is written to LevelDB so it only
+    runs once, but the initial pin happens invisibly.
+
+    Patch: No-op the init() export so PinManager.exe is never spawned.
+    """
+    path = os.path.join(src, "pinApp", "index.js")
+    if not os.path.exists(path):
+        warn("pinApp/index.js not found — skipping")
+        return
+    with open(path, 'r', encoding='utf-8') as f:
+        code = f.read()
+
+    old = "async function init() {"
+    new = (
+        "// EDUCATIONAL PATCH: silent taskbar pin disabled\n"
+        "async function init() { return; // no-op: PinManager.exe not spawned\n"
+        "  // original body below (disabled)\n  void (async () => {"
+    )
+    # Simpler: just replace the exported init entirely
+    old2 = (
+        "module.exports = {\n"
+        "  init,\n"
+        "  savePinState,\n"
+        "};"
+    )
+    new2 = (
+        "// EDUCATIONAL PATCH: init() replaced with no-op\n"
+        "async function _init_noop() {}\n"
+        "module.exports = {\n"
+        "  init: _init_noop,\n"
+        "  savePinState,\n"
+        "};"
+    )
+    if old2 not in code:
+        warn("pinApp/index.js: module.exports block not found — skipping")
+        return
+    _write(path, code.replace(old2, new2))
+    ok("pinApp/index.js — init() no-op'd (PinManager.exe not spawned)")
+
+
+
 
 def patch_asar():
     step("PATCH 2 — app.asar (ASAR extract → JS patch → repack)")
@@ -556,6 +685,9 @@ def patch_asar():
     patch_window_handlers(src)
     patch_create_window(src)
     patch_blitz_entry(src)
+    patch_domain(src)
+    patch_machine_id(src)
+    patch_pin_app(src)
 
     # Repack with --unpack "{*.node,*.dll}"
     # *.node — native addons must be real filesystem paths (dlopen requirement)
@@ -655,9 +787,18 @@ def main():
     print("\n" + "=" * 60)
     print("  Done! All patches applied.")
     print()
-    print("  [1] blitz_core.node — integrity checker bypassed")
-    print("  [2] app.asar        — 6 JS patches applied")
-    print("  [3] .env.production — Sentry DSNs cleared")
+    print("  [1] blitz_core.node — integrity checker bypassed (E1-E6)")
+    print("  [2] app.asar        — 10 JS patches applied:")
+    print("        auth.js              → always PRO_SUBSCRIBER")
+    print("        autoUpdater/index.js → disabled")
+    print("        crashReporter.js     → Sentry disabled")
+    print("        ota.js               → disabled")
+    print("        electronWindowHandlers.js → ad/telemetry blocked")
+    print("        createWindow.js      → 940×500 premium size")
+    print("        blitz-entry.js       → Topics API + machineID no-op'd")
+    print("        util/domain.js       → pinned to probuilds.net")
+    print("        pinApp/index.js      → PinManager.exe not spawned")
+    print("  [3] .env.production — Sentry DSNs + Locize key cleared")
     print("  [4] app-update.yml  — update feed disabled")
     print()
     print(f"  Backups: {BACKUP_DIR}")

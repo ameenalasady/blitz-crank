@@ -20,7 +20,9 @@
    - [ota.js — Disable OTA Updater](#otajs--disable-ota-updater)
    - [electronWindowHandlers.js — Network-Level Ad Block](#electronwindowhandlersjs--network-level-ad-block)
    - [createWindow.js — Premium Window Size](#createwindowjs--premium-window-size)
-   - [blitz-entry.js — Disable Privacy Sandbox](#blitz-entryjs--disable-privacy-sandbox)
+   - [blitz-entry.js — Privacy Sandbox, Auto-Start, MachineID](#blitz-entryjs--privacy-sandbox-auto-start-machineid)
+   - [util/domain.js — Pin Domain, Disable Geo Fingerprinting](#utildomainjs--pin-domain-disable-geo-fingerprinting)
+   - [pinApp/index.js — Disable Silent Taskbar Pin](#pinappindexjs--disable-silent-taskbar-pin)
 8. [Patch 3 — `.env.production`](#8-patch-3--envproduction)
 9. [Patch 4 — `app-update.yml`](#9-patch-4--app-updateyml)
 10. [ASAR Repacking — Why `--unpack` Matters](#10-asar-repacking--why---unpack-matters)
@@ -121,23 +123,27 @@ The `E6 Error` was the one triggered when `app.asar` was modified — the native
 ### Toolchain
 
 - **Ghidra 12.1** (NSA's open-source reverse engineering suite)
-- Custom headless analysis script (`ExportForAI.java`) to batch-export decompiled C, cross-references, strings, and symbol tables to plain text
+- **`tools/GhidraDecompExport.java`** — included in this repo, a polished headless Ghidra script that batch-exports decompiled C, cross-references, strings, imports/exports, data types, and memory segments to plain text for analysis
 
 ### Ghidra Headless Analysis
 
 ```batch
 analyzeHeadless <project_dir> BlitzProject \
   -import blitz_core.node \
-  -postScript ExportForAI.java \
+  -postScript GhidraDecompExport.java \
   -processor x86:LE:64:default \
   -cspec windows
 ```
 
-The `ExportForAI.java` script exported:
-- `decompiled_all.c` — All 2,670 decompiled functions
+The `GhidraDecompExport.java` script exports:
+- `decompiled_all.c` — All decompiled functions (concatenated — ideal for grep/AI)
+- `functions/` — One `.c` file per function for targeted inspection
 - `strings.txt` — All string literals (where E1–E6 were found)
 - `exports.txt` — Exported N-API symbols
-- `xrefs.txt` — Cross-reference map
+- `imports.txt` — DLL import table
+- `xrefs.txt` — Cross-reference call graph
+- `datatypes.txt` — Recovered structs and enums
+- `segments.txt` — PE section layout (RVA ranges, permissions)
 
 ### Finding the Integrity Loop
 
@@ -403,11 +409,48 @@ windows.client.setMinimumSize(940, 500);
 
 ---
 
-### blitz-entry.js — Disable Privacy Sandbox
+### blitz-entry.js — Privacy Sandbox, Auto-Start, MachineID
 
-**Original behaviour:** The app entry point appends `--enable-privacy-sandbox-ads-apis` to Chromium's command-line arguments, enabling the Topics API (a FLoC successor for browser-based ad targeting). It also calls `addAutoStartOnFirstRun()` which registers Blitz as a Windows startup app via the registry.
+**Original behaviour:** The app entry point does three things patched here:
+1. Appends `--enable-privacy-sandbox-ads-apis` to Chromium's command-line arguments, enabling the Topics API (a FLoC successor for browser-based ad targeting)
+2. Calls `addAutoStartOnFirstRun()` which registers Blitz as a Windows startup app via the registry on first launch
+3. Calls `writeMachineID()` on every launch — reads a hardware fingerprint (derived from CPU/disk serials via `blitz_core.node`) and writes it to `%APPDATA%/.machineId`, which is used as a persistent cross-session tracking identifier
 
-**Patch:** Comment out both lines.
+**Patches:** Topics API switch commented out; auto-start registration no-op'd; `writeMachineID()` replaced with an empty function.
+
+---
+
+### util/domain.js — Pin Domain, Disable Geo Fingerprinting
+
+**Original behaviour:** `getDomain()` performs two network calls on every launch:
+1. Fetches `https://cloudflare.com/cdn-cgi/trace` to determine the user's country code (exposing IP to Cloudflare)
+2. Computes `CRC32(machineID + "desktop-traffic") % 100` and uses the result as an A/B bucket to route traffic to one of five branded mirror domains:
+
+| Domain | Countries |
+|--------|----------|
+| `agentselect.net` | US, FR, HK, AR, CZ, AT… |
+| `championselect.net` | US, AU, CA, NL, NZ, SG… |
+| `lolstats.com` | US, BR, CA, KR… |
+| `probuilds.net` | US, AU, CA, GB, DE, KR… |
+| `tftcomps.gg` | US, BR, CA, KR… |
+
+This means Blitz uses your **hardware machine ID as a persistent tracking seed** to deterministically assign you to an A/B group — surviving reinstalls and account changes.
+
+**Patch:** Replace the entire module with a two-line stub that returns `"probuilds.net"` directly — no Cloudflare request, no CRC32, no machine ID computation:
+
+```js
+async function getDomain(_version) {
+  return MAIN_DOMAIN.hostname; // always "probuilds.net"
+}
+```
+
+---
+
+### pinApp/index.js — Disable Silent Taskbar Pin
+
+**Original behaviour:** On first launch, `init()` checks if Blitz is pinned to the Windows taskbar. If not, it spawns `PinManager.exe` (a bundled helper binary in `blitz-deps/`) with a `Blitz.lnk` shortcut path as its argument, silently pinning the app to the taskbar **without any confirmation dialog**. The result is written to LevelDB so pinning only runs once.
+
+**Patch:** Replace the `init` export with a no-op function so `PinManager.exe` is never spawned.
 
 ---
 
@@ -507,6 +550,7 @@ app.asar.unpacked/    ← Real files on disk (native modules + DLLs)
 | Tool | Version | Purpose |
 |------|---------|---------|
 | [Ghidra](https://ghidra-sre.org/) | 12.1 | Disassembly and decompilation of `blitz_core.node` |
+| [`tools/GhidraDecompExport.java`](tools/GhidraDecompExport.java) | — | Headless Ghidra script: exports decompiled C, strings, xrefs, segments |
 | Python | 3.8+ | PE binary patching, ASAR orchestration |
 | Node.js + npx | 18+ | Running `@electron/asar` for extraction/repacking |
 | [@electron/asar](https://github.com/electron/asar) | latest | Official ASAR packing/unpacking tool |
@@ -536,12 +580,27 @@ python tools\patch.py
 ```
 
 The script will:
-1. Backup all original files to `_backup/`
-2. Patch `blitz_core.node` in-place (8 bytes)
-3. Extract `app.asar` from the backup, apply JS patches, repack with `--unpack "{*.node,*.dll}"`
-4. Install patched `app.asar` + `app.asar.unpacked/`
-5. Clear Sentry DSNs from `.env.production`
-6. Disable the update feed in `app-update.yml`
+1. Kill any running Blitz processes (to release locked native file handles)
+2. Backup all original files to `_backup/`
+3. Patch `blitz_core.node` in-place (8 bytes — integrity bypass)
+4. Extract `app.asar` from the backup, apply all 10 JS patches, repack with `--unpack "{*.node,*.dll}"`
+5. Install patched `app.asar` + `app.asar.unpacked/`
+6. Clear Sentry DSNs and Locize API key from `.env.production`
+7. Disable the update feed in `app-update.yml`
+
+**JS patches applied (in order):**
+
+| File | Effect |
+|------|--------|
+| `auth.js` | `fetchUser()` returns hardcoded `PRO_SUBSCRIBER`; `hasPremiumRole()` always `true` |
+| `autoUpdater/index.js` | All update functions no-op'd |
+| `crashReporter.js` | Sentry crash reporter disabled |
+| `ota.js` | OTA version check returns bundled version |
+| `electronWindowHandlers.js` | 30+ ad/telemetry domains cancelled at session layer |
+| `createWindow.js` | All 3 MIN_WIDTH/MIN_HEIGHT gates set to 940×500 |
+| `blitz-entry.js` | Topics API, auto-start, and machineID write no-op'd |
+| `util/domain.js` | Geo lookup + A/B routing replaced with static `probuilds.net` |
+| `pinApp/index.js` | Silent taskbar pin (PinManager.exe) not spawned |
 
 ---
 
