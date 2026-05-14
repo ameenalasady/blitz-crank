@@ -50,7 +50,11 @@ jobs:
           if [ -z "$NOTES" ]; then
             NOTES="See README.md for full documentation."
           fi
-          echo "notes=$NOTES" >> $GITHUB_OUTPUT
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
