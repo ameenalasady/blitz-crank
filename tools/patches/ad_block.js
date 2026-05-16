@@ -35,12 +35,6 @@
     "*://www.google-analytics.com/*",
     "*://ssl.google-analytics.com/*",
     "*://science.v2.iesdev.com/*",
-    "*://sentry.blitz.gg/*",
-    "*://sentry.io/*",
-    "*://*.sentry.io/*",
-    "*://locize.io/*",
-    "*://*.locize.io/*",
-    "*://locize.com/*",
   ];
   window.webContents.session.webRequest.onBeforeRequest(
     { urls: AD_BLOCK_PATTERNS },
