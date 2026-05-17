@@ -189,63 +189,81 @@ void FUN_1800161c0(void) {
 
 ### Goal
 
-Make `FUN_1800161c0` immediately set the "verified" flag and return, without executing any checks.
+Bypass the integrity checking mechanism within `FUN_1800161c0` while ensuring the game detection and IPC logic at the start of the function continues to run.
 
-### Technique: RIP-Relative MOV + RET
+### Technique: RIP-Relative MOV + JMP
 
-We overwrite the first 8 bytes of the function with two x86-64 instructions:
+Initially, a blunt patch was used that placed a `RET` at the very beginning of the function. This bypassed the checks but inadvertently broke the game overlay by skipping the `EnumWindows` and game detection logic.
 
+The new patch targets the specific conditional jump guarding the integrity checks (`CMP` + `JNZ`), forcing the "verified" flag to true and unconditionally jumping over the checks.
+
+**Original Instructions at `0x180016C08`:**
 ```asm
-; Instruction 1: MOV byte ptr [rip + 0xA96E5], 1
+; Check if the "verified" flag is set
+CMP byte ptr [DAT_1800bf8ac], 0
+JNZ SKIP_CHECKS
+```
+
+**New Patched Instructions:**
+```asm
+; Instruction 1: MOV byte ptr [DAT_1800bf8ac], 1
 ; Opcode encoding: C6 /0 /disp32 /imm8
-C6 05 E5 96 0A 00 01
+C6 05 9D 8C 0A 00 01
 
-; Instruction 2: RET
-C3
+; Instruction 2: JMP rel32 (+0x1361)
+E9 61 13 00 00
+
+; Instruction 3: NOP (Padding to match original 13 bytes)
+90
 ```
 
-**Why RIP-relative addressing?**
+**RIP-Relative Calculations:**
 
-In x86-64 there is no `mov [absolute_address], imm8` encoding that fits in 8 bytes. Instead we use RIP-relative: the CPU computes the target address as `RIP + displacement`, where RIP is the address of the **next** instruction after the current one.
+In x86-64, accessing globals often requires RIP-relative addressing (`RIP + displacement`). RIP is the address of the **next** instruction.
 
 ```
-Instruction VA:   0x1800161C0
+Instruction 1 VA: 0x180016C08
 MOV length:       7 bytes
-RIP after MOV:    0x1800161C7
-
+RIP after MOV:    0x180016C0F
 Target (DAT_1800bf8ac): 0x1800BF8AC
-Displacement:     0x1800BF8AC - 0x1800161C7 = 0x000A96E5 (stored LE: E5 96 0A 00)
+Displacement:     0x1800BF8AC - 0x180016C0F = 0x000A8C9D (stored LE: 9D 8C 0A 00)
+
+Instruction 2 VA: 0x180016C0F
+JMP length:       5 bytes
+RIP after JMP:    0x180016C14
+Target (end of check loop): 0x180017F75
+Displacement:     0x180017F75 - 0x180016C14 = 0x00001361 (stored LE: 61 13 00 00)
 ```
 
 ### PE File Offset Calculation
 
-The virtual address `0x1800161C0` cannot be directly used as a file offset — PE files are mapped differently in memory than on disk. We must walk the **section headers** to convert the RVA (Relative Virtual Address) to a raw file offset:
+The virtual address `0x180016C08` cannot be directly used as a file offset — PE files are mapped differently in memory than on disk. We must walk the **section headers** to convert the RVA (Relative Virtual Address) to a raw file offset:
 
 ```
-RVA = VA - IMAGE_BASE = 0x1800161C0 - 0x180000000 = 0x161C0
+RVA = VA - IMAGE_BASE = 0x180016C08 - 0x180000000 = 0x16C08
 
 For each section header:
   if (VirtualAddress <= RVA < VirtualAddress + VirtualSize):
     FileOffset = RawDataPointer + (RVA - VirtualAddress)
 
-Result: File offset 0x155C0  (in the .text section)
+Result: File offset 0x16008  (in the .text section)
 ```
 
 ### Patch Bytes
 
 ```
-Offset 0x155C0:
-  Before: 40 55 53 56 57 41 54 41   (function prologue: push rbp; push rbx; ...)
-  After:  C6 05 E5 96 0A 00 01 C3   (mov [rip+0xA96E5], 1; ret)
+Offset 0x16008:
+  Before: 80 3D 9D 8C 0A 00 00 0F 85 60 13 00 00
+  After:  C6 05 9D 8C 0A 00 01 E9 61 13 00 00 90
 ```
 
 ### Effect
 
-Every time the Electron process calls `FUN_1800161c0` (via an internal timer), it immediately:
+Every time the Electron process calls `FUN_1800161c0` (via an internal timer), the game detection logic runs perfectly. But when it reaches the integrity checks, it immediately:
 1. Writes `1` to `DAT_1800bf8ac` — the "verified" global flag
-2. Returns — skipping all anti-debug, timing, path, and CRC checks
+2. Jumps to the end of the loop — skipping all anti-debug, timing, path, and CRC checks
 
-This means we can now freely modify `app.asar` without triggering E6.
+This allows us to freely modify `app.asar` without triggering E6, while keeping the application's core functionality (the overlay) fully operational.
 
 ---
 
