@@ -133,37 +133,42 @@ def do_restore():
 # PATCH 1 — blitz_core.node (PE binary patch)
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Target:  FUN_1800161c0  (the main integrity verification loop)
-# Method:  Overwrite the 8-byte function prologue with:
+# Target:  FUN_1800161c0 + 0xA48 (the start of the integrity verification section)
+# Method:  Overwrite the CMP + JNZ instructions with MOV + JMP:
 #
-#   C6 05 E5 96 0A 00 01   MOV byte ptr [RIP + 0xA96E5], 1
-#   C3                     RET
+#   C6 05 9D 8C 0A 00 01   MOV byte ptr [RIP + 0xA8C9D], 1
+#   E9 61 13 00 00         JMP rel32 (+0x1361)
+#   90                     NOP
 #
 # RIP-relative calculation:
-#   Instruction VA = 0x1800161C0
-#   RIP after 7-byte MOV = 0x1800161C7
+#   Instruction VA = 0x180016C08
+#   RIP after 7-byte MOV = 0x180016C0F
 #   Target (DAT_1800bf8ac, "verified" flag) = 0x1800BF8AC
-#   Displacement = 0x1800BF8AC - 0x1800161C7 = 0x000A96E5  (LE: E5 96 0A 00)
+#   Displacement = 0x1800BF8AC - 0x180016C0F = 0x000A8C9D  (LE: 9D 8C 0A 00)
 #
-# Effect: the function immediately sets verified=1 and returns, bypassing
-#         all E1-E6 checks (anti-debug, timing, path, CRC32 of icudtl.dat
-#         and app.asar). This is what allows app.asar to be freely modified.
+#   Instruction VA for JMP = 0x180016C0F
+#   RIP after 5-byte JMP = 0x180016C14
+#   Target (end of check loop) = 0x180017F75
+#   Displacement = 0x180017F75 - 0x180016C14 = 0x00001361  (LE: 61 13 00 00)
+#
+# Effect: Bypasses the integrity checks (E1-E6) by safely setting verified=1 
+#         and jumping over the checks, while keeping the game overlay 
+#         detection logic intact.
 # ─────────────────────────────────────────────────────────────────────────────
 
 IMAGE_BASE  = 0x180000000
-TARGET_RVA  = 0x161C0        # FUN_1800161c0 relative to IMAGE_BASE
+TARGET_RVA  = 0x16C08        # FUN_1800161c0 + 0xA48
 VERIFIED_VA = 0x1800BF8AC    # DAT_1800bf8ac — the "verified" flag byte
 
 PATCH_BYTES = bytes([
-    0xC6, 0x05,              # MOV byte ptr [RIP + disp32], imm8
-    0xE5, 0x96, 0x0A, 0x00, # disp32 = 0x000A96E5 (little-endian)
-    0x01,                    # imm8   = 1
-    0xC3,                    # RET
+    0xC6, 0x05, 0x9D, 0x8C, 0x0A, 0x00, 0x01, # MOV byte ptr [DAT_1800bf8ac], 1
+    0xE9, 0x61, 0x13, 0x00, 0x00,             # JMP 0x180017f75
+    0x90                                      # NOP
 ])
 
 
 def _rva_to_file_offset(f, rva):
-    """Walk PE section headers to convert RVA → raw file offset."""
+    """Walk PE section headers to convert RVA -> raw file offset."""
     f.seek(0x3C)
     pe = struct.unpack("<I", f.read(4))[0]
     f.seek(pe + 4 + 2)
@@ -280,7 +285,7 @@ def _apply_one(patch, src_dir):
 
 
 def patch_asar():
-    step("PATCH 2 — app.asar (ASAR extract → JS patch → repack)")
+    step("PATCH 2 — app.asar (ASAR extract -> JS patch -> repack)")
     backup(ASAR_PATH)
 
     # Back up the unpacked native module directory
@@ -305,7 +310,7 @@ def patch_asar():
     orig_asar = os.path.join(BACKUP_DIR, "app.asar")
     if not os.path.exists(orig_asar):
         die(f"Original ASAR backup not found at {orig_asar}")
-    log(f"Extracting original ASAR → {EXTRACT_DIR}")
+    log(f"Extracting original ASAR -> {EXTRACT_DIR}")
     run(f'npx @electron/asar extract "{orig_asar}" "{EXTRACT_DIR}"')
     ok("Original ASAR extracted")
 
@@ -328,7 +333,7 @@ def patch_asar():
     kill_blitz()
 
     shutil.copy2(REPACK_ASAR, ASAR_PATH)
-    ok(f"Installed → {ASAR_PATH}")
+    ok(f"Installed -> {ASAR_PATH}")
 
     repack_unpacked  = REPACK_ASAR + ".unpacked"
     install_unpacked = ASAR_PATH   + ".unpacked"
@@ -336,7 +341,7 @@ def patch_asar():
         if os.path.exists(install_unpacked):
             shutil.rmtree(install_unpacked)
         shutil.copytree(repack_unpacked, install_unpacked)
-        ok(f"Installed app.asar.unpacked/ → {install_unpacked}")
+        ok(f"Installed app.asar.unpacked/ -> {install_unpacked}")
     else:
         warn("No .unpacked dir generated — native modules may fail to load!")
 
